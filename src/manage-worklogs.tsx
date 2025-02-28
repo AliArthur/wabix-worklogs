@@ -117,10 +117,9 @@ export default function Command() {
               id={`${day.date}-${projectId}`}
               title={project.projectName}
               icon={Icon.Box}
-              subtitle={`${project.totalDecimalHours}h · ${project.tasks.length} ${project.tasks.length === 1 ? "task" : "tasks"}`}
               accessories={[
                 {
-                  text: project.formattedTotalDuration,
+                  text: `${project.totalDecimalHours}h`,
                   icon: Icon.Clock,
                 },
               ]}
