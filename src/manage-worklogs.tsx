@@ -53,18 +53,40 @@ export default function Command() {
                 ]);
                 const formattedDuration = `${duration.hours}h ${duration.minutes.toFixed()}m`;
                 return {
+                  project: project?.name || "Unknown Project",
                   duration: formattedDuration,
                   type: session.type,
                   description: session.description,
                   githubUris: session.githubUris?.length ? session.githubUris : undefined,
                 };
               });
+              const totalDuration = sessions.reduce(
+                (acc, session) => {
+                  const duration = DateTime.fromMillis(session.endTime).diff(DateTime.fromMillis(session.startTime), [
+                    "hours",
+                    "minutes",
+                  ]);
+                  return {
+                    hours: acc.hours + duration.hours,
+                    minutes: acc.minutes + duration.minutes,
+                  };
+                },
+                { hours: 0, minutes: 0 },
+              );
 
               return (
                 <List.Item
                   key={`${date}-${projectId}`}
                   title={project?.name || "Unknown Project"}
-                  subtitle={`Logs: ${sessions.length}`}
+                  accessories={[
+                    {
+                      tag: {
+                        value: `${totalDuration.hours.toFixed()}h ${totalDuration.minutes.toFixed()}m`,
+
+                        color: Color.PrimaryText,
+                      },
+                    },
+                  ]}
                   actions={
                     <ActionPanel>
                       <Action.CopyToClipboard
