@@ -53,7 +53,7 @@ export default function StartWork() {
     if (activeSession) {
       await showToast(
         Toast.Style.Failure,
-        "Session Already Active",
+        "Session already active",
         "Please stop the current session before starting a new one.",
       );
       return;

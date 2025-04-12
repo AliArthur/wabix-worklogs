@@ -1,136 +1,160 @@
-import { Form, ActionPanel, Action, showToast, Toast, Icon, popToRoot } from "@raycast/api";
-import { useEffect, useState, useRef } from "react";
-import { endTask, endSession, getActiveSession, requiresGithubUrl } from "../utils";
-import { Project, TaskType } from "../types";
+import { Action, ActionPanel, Detail, Form, Icon, LocalStorage, showToast, Toast, useNavigation } from "@raycast/api";
+import { FormValidation, useForm, usePromise } from "@raycast/utils";
 
-export default function Command() {
-  const [isLoading, setIsLoading] = useState(true);
-  const [activeProject, setActiveProject] = useState<Project | null>(null);
-  const [taskType, setTaskType] = useState<TaskType>(TaskType.TASK);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+import { TokenForm } from "./components/token-form";
+import { ActiveSession, Project, TaskType } from "./types";
+import { useRef } from "react";
+import { formatDate } from "./utils/formatDate";
+import { EditRepositories } from "./components/edit-repository";
+import { SelectCommits } from "./components/select-commits";
+
+function requiresGithubUrl(type: string): boolean {
+  return ([TaskType.TASK, TaskType.BUG_FIX, TaskType.CHANGE_REQUEST] as string[]).includes(type);
+}
+
+export default function StartWork() {
+  const { push } = useNavigation();
   const taskTypeDropdownRef = useRef<Form.Dropdown>(null);
 
-  // Check if there's an active session on component mount
-  useEffect(() => {
-    async function checkActiveSession() {
-      try {
-        const activeSession = await getActiveSession();
-        if (activeSession) {
-          setActiveProject(activeSession.project);
-          setErrorMessage(null);
-        } else {
-          setErrorMessage("No active session found. Start a session first.");
-        }
-      } catch (error) {
-        setErrorMessage("Failed to load active session");
-      } finally {
-        setIsLoading(false);
-      }
-    }
+  const {
+    data: hasToken,
+    isLoading: checkingToken,
+    revalidate,
+  } = usePromise(async () => {
+    const token = await LocalStorage.getItem("token");
+    return !!token;
+  });
 
-    checkActiveSession();
-  }, []);
-
-  // Handle form submission
-  const handleSubmit = async (values: {
-    description: string;
-    taskType: string;
-    githubUrl?: string;
-    endSession: boolean;
-  }) => {
-    try {
-      setIsLoading(true);
-      const selectedTaskType = values.taskType as TaskType;
-
-      // Validate GitHub URL for required task types
-      if (requiresGithubUrl(selectedTaskType) && !values.githubUrl) {
-        showToast({
-          style: Toast.Style.Failure,
-          title: "GitHub URL Required",
-          message: `GitHub URL is required for ${selectedTaskType} tasks`,
-        });
-        setIsLoading(false);
+  const {
+    data: activeSessionData,
+    isLoading: fetchingActiveSession,
+    revalidate: reload,
+  } = usePromise(
+    async () => {
+      const activeSession = await LocalStorage.getItem("activeSession");
+      if (!activeSession) {
+        await showToast(Toast.Style.Failure, "No active session");
         return;
       }
 
-      // End the task
-      await endTask(values.description, selectedTaskType, values.githubUrl);
-
-      // If also ending the session
-      if (values.endSession) {
-        await endSession();
-        showToast({
-          style: Toast.Style.Success,
-          title: "Task and Session Ended",
-          message: `Task logged and session for ${activeProject?.name} has ended`,
-        });
-      } else {
-        showToast({
-          style: Toast.Style.Success,
-          title: "Task Logged",
-          message: "Task has been successfully logged",
-        });
+      if (typeof activeSession !== "string") {
+        await showToast(Toast.Style.Failure, "Invalid active session");
+        await LocalStorage.removeItem("activeSession");
+        return;
       }
 
-      // Return to root
-      popToRoot();
-    } catch (error) {
-      showToast({
-        style: Toast.Style.Failure,
-        title: "Failed to Log Task",
-        message: error instanceof Error ? error.message : "Unknown error",
-      });
-      setIsLoading(false);
-    }
-  };
+      const session: ActiveSession = JSON.parse(activeSession);
 
-  if (errorMessage) {
-    return (
-      <Form
-        actions={
-          <ActionPanel>
-            <Action.OpenInBrowser
-              title="Start a Session"
-              url="raycast://extensions/aliarthur/wabix-worklogs/start-session"
-            />
-          </ActionPanel>
+      const savedProjects = await LocalStorage.getItem<string>("projects");
+      if (!savedProjects) return;
+      const projects = JSON.parse(savedProjects) as Project[];
+
+      const project = projects.find((p) => p.id === session.projectId);
+      if (!project) {
+        await showToast(Toast.Style.Failure, "Project not found");
+        await LocalStorage.removeItem("activeSession");
+        return;
+      }
+
+      return { session, project };
+    },
+    [],
+    { execute: hasToken },
+  );
+
+  const { itemProps, values, handleSubmit } = useForm<{
+    description: string;
+    taskType: string;
+    endSession: boolean;
+    startDate: Date | null;
+    endDate: Date | null;
+  }>({
+    onSubmit: (values) => {
+      if (!activeSessionData) {
+        showToast(Toast.Style.Failure, "No active session found");
+        return;
+      }
+
+      const requiresCommits = requiresGithubUrl(values.taskType);
+      if (requiresCommits) {
+        push(
+          <SelectCommits
+            project={activeSessionData.project}
+            taskDetails={values}
+            session={activeSessionData.session}
+          />,
+        );
+        return;
+      }
+      console.log("Form submitted with values:", values);
+    },
+    initialValues: {
+      taskType: TaskType.TASK,
+      description: "",
+      endSession: false,
+      startDate: null,
+      endDate: null,
+    },
+    validation: {
+      description: FormValidation.Required,
+      taskType: (value) => {
+        if (!value) return "Task type is required";
+        if (!Object.values(TaskType).includes(value as TaskType)) {
+          return "Invalid task type";
         }
-      >
-        <Form.Description title="Error" text={errorMessage} />
-      </Form>
-    );
-  }
+      },
+    },
+  });
+
+  if (!hasToken && !checkingToken) return <TokenForm onSuccess={revalidate} />;
+  if (checkingToken || fetchingActiveSession) return <Detail />;
+  if (!activeSessionData) return <Detail markdown="No active session found." />;
 
   return (
     <Form
-      isLoading={isLoading}
+      searchBarAccessory={<Form.LinkAccessory target="https://wabix.io" text="Open Wabix" />}
+      enableDrafts
       actions={
         <ActionPanel>
-          <Action.SubmitForm title="Submit Task" icon={Icon.CheckCircle} onSubmit={handleSubmit} />
+          <Action.SubmitForm
+            title={requiresGithubUrl(values.taskType) ? "Continue" : "Submit"}
+            icon={Icon.CheckCircle}
+            onSubmit={handleSubmit}
+          />
           <Action
             title="Focus Task Type"
             shortcut={{ modifiers: ["cmd"], key: "t" }}
-            onAction={() => taskTypeDropdownRef.current?.focus()}
+            icon={Icon.Circle}
+            onAction={() => {
+              taskTypeDropdownRef.current?.focus();
+            }}
+          />
+          <Action.Push
+            title="Edit Repositories"
+            target={<EditRepositories project={activeSessionData.project.id} onSubmit={reload} />}
+            icon={Icon.Pencil}
+            shortcut={{ modifiers: ["cmd"], key: "e" }}
           />
         </ActionPanel>
       }
     >
-      {activeProject && <Form.Description title="Current Session" text={activeProject.name} />}
+      <Form.Description
+        text={`${activeSessionData.project.name} | Task started at ${formatDate(activeSessionData.session.startTime)}`}
+      />
 
       <Form.Dropdown
-        id="taskType"
-        title="Task Type"
-        value={taskType}
-        onChange={(newValue) => setTaskType(newValue as TaskType)}
+        {...itemProps.taskType}
         ref={taskTypeDropdownRef}
+        info="Use ⌘ + T to focus"
+        placeholder="Select a task type"
       >
-        <Form.Dropdown.Item value={TaskType.TASK} title="Task" icon={Icon.Code} />
-        <Form.Dropdown.Item value={TaskType.BUG_FIX} title="Bug Fix" icon={Icon.Bug} />
-        <Form.Dropdown.Item value={TaskType.CHANGE_REQUEST} title="Change Request" icon={Icon.EditShape} />
-        <Form.Dropdown.Item value={TaskType.CALL} title="Call" icon={Icon.Phone} />
-        <Form.Dropdown.Item value={TaskType.QA} title="QA" icon={Icon.CheckCircle} />
-        <Form.Dropdown.Item value={TaskType.ADMINISTRATIVE} title="Administrative" icon={Icon.Document} />
-        <Form.Dropdown.Item value={TaskType.OTHER} title="Other" icon={Icon.QuestionMark} />
+        <Form.Dropdown.Item value={String(TaskType.TASK)} title="Task" icon={Icon.Code} />
+        <Form.Dropdown.Item value={String(TaskType.BUG_FIX)} title="Bug Fix" icon={Icon.Bug} />
+        <Form.Dropdown.Item value={String(TaskType.CHANGE_REQUEST)} title="Change Request" icon={Icon.EditShape} />
+        <Form.Dropdown.Item value={String(TaskType.CALL)} title="Call" icon={Icon.Phone} />
+        <Form.Dropdown.Item value={String(TaskType.QA)} title="QA" icon={Icon.CheckCircle} />
+        <Form.Dropdown.Item value={String(TaskType.ADMINISTRATIVE)} title="Administrative" icon={Icon.Document} />
+        <Form.Dropdown.Item value={String(TaskType.OTHER)} title="Other" icon={Icon.QuestionMark} />
       </Form.Dropdown>
 
       <Form.TextArea
@@ -139,13 +163,15 @@ export default function Command() {
         placeholder="What did you work on?"
         enableMarkdown
         autoFocus
+        info="Use ⌘ + Enter to submit"
       />
 
-      {requiresGithubUrl(taskType) && (
-        <Form.TextField id="githubUrl" title="GitHub URL" placeholder="https://github.com/user/repo/commit/hash" />
-      )}
+      <Form.Checkbox id="endSession" label="Close work session after task" defaultValue={false} />
 
-      <Form.Checkbox id="endSession" label="End Session After Task" defaultValue={false} />
+      <Form.Separator />
+      <Form.Description title="Optional" text="Adjust the start time or end time if needed" />
+      <Form.DatePicker {...itemProps.startDate} title="Start date" />
+      <Form.DatePicker {...itemProps.endDate} title="End date" />
     </Form>
   );
 }
