@@ -124,8 +124,6 @@ export default function StartWork() {
         popToRootType: PopToRootType.Immediate,
         clearRootSearch: true,
       });
-
-      console.log("Form submitted with values:", values);
     },
     initialValues: {
       taskType: TaskType.TASK,

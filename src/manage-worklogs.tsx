@@ -1,4 +1,4 @@
-import { List, Icon, LocalStorage, Color } from "@raycast/api";
+import { List, Icon, LocalStorage, Color, ActionPanel, Action } from "@raycast/api";
 import { usePromise } from "@raycast/utils";
 import { Project, WorkLogs } from "./types";
 import { formatDate } from "./utils/formatDate";
@@ -46,11 +46,34 @@ export default function Command() {
           <List.Section key={date} title={DateTime.fromFormat(date, "yyyy-MM-dd").toFormat("MMMM dd, yyyy")}>
             {Object.entries(prj).map(([projectId, sessions]) => {
               const project = projects.find((p) => p.id === projectId);
+              const withDuration = sessions.map((session) => {
+                const duration = DateTime.fromMillis(session.endTime).diff(DateTime.fromMillis(session.startTime), [
+                  "hours",
+                  "minutes",
+                ]);
+                const formattedDuration = `${duration.hours}h ${duration.minutes.toFixed()}m`;
+                return {
+                  duration: formattedDuration,
+                  type: session.type,
+                  description: session.description,
+                  githubUris: session.githubUris?.length ? session.githubUris : undefined,
+                };
+              });
+
               return (
                 <List.Item
                   key={`${date}-${projectId}`}
                   title={project?.name || "Unknown Project"}
                   subtitle={`Logs: ${sessions.length}`}
+                  actions={
+                    <ActionPanel>
+                      <Action.CopyToClipboard
+                        title="Copy Worklog"
+                        content={JSON.stringify(withDuration, null, 2)}
+                        shortcut={{ modifiers: ["cmd"], key: "c" }}
+                      />
+                    </ActionPanel>
+                  }
                   detail={
                     <List.Item.Detail
                       metadata={
