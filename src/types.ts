@@ -1,3 +1,13 @@
+export enum TaskType {
+  CALL = "Call",
+  TASK = "Task",
+  BUG_FIX = "Bug Fix",
+  CHANGE_REQUEST = "Change Request",
+  QA = "QA",
+  ADMINISTRATIVE = "Administrative",
+  OTHER = "Other",
+}
+
 export type LocalRepository = {
   url: string;
   name: string;
@@ -9,28 +19,21 @@ export type Project = {
   repositories: LocalRepository[];
 };
 
-export type ActiveSession = {
-  projectId: string;
-  startTime: number;
-};
-
-export enum TaskType {
-  CALL = "Call",
-  TASK = "Task",
-  BUG_FIX = "Bug Fix",
-  CHANGE_REQUEST = "Change Request",
-  QA = "QA",
-  ADMINISTRATIVE = "Administrative",
-  OTHER = "Other",
-}
-
-export type TaskLog = {
+export type SessionLog = {
   projectId: string;
   description: string;
   startTime: number;
   endTime: number;
+  githubUris?: string[];
   type: TaskType;
-  githubUris: string[];
 };
 
-export type Worklogs = Record<string, Record<string, TaskLog[]>>;
+export type ActiveSession = {
+  projectId: string;
+  startTime: number;
+  logs: SessionLog[];
+};
+
+export type WorkLogs = {
+  [date: string]: { [projectId: string]: SessionLog[] };
+};

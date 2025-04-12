@@ -1,12 +1,24 @@
-import { Action, ActionPanel, Detail, Form, Icon, LocalStorage, showToast, Toast, useNavigation } from "@raycast/api";
+import {
+  Action,
+  ActionPanel,
+  Detail,
+  Form,
+  Icon,
+  LocalStorage,
+  PopToRootType,
+  showHUD,
+  showToast,
+  Toast,
+  useNavigation,
+} from "@raycast/api";
 import { FormValidation, useForm, usePromise } from "@raycast/utils";
 
-import { TokenForm } from "./components/token-form";
-import { ActiveSession, Project, TaskType } from "./types";
+import { ActiveSession, Project, SessionLog, TaskType, WorkLogs } from "./types";
 import { useRef } from "react";
 import { formatDate } from "./utils/formatDate";
-import { EditRepositories } from "./components/edit-repository";
 import { SelectCommits } from "./components/select-commits";
+import { ManageProject } from "./components/manage-project";
+import { DateTime } from "luxon";
 
 function requiresGithubUrl(type: string): boolean {
   return ([TaskType.TASK, TaskType.BUG_FIX, TaskType.CHANGE_REQUEST] as string[]).includes(type);
@@ -17,50 +29,37 @@ export default function StartWork() {
   const taskTypeDropdownRef = useRef<Form.Dropdown>(null);
 
   const {
-    data: hasToken,
-    isLoading: checkingToken,
-    revalidate,
-  } = usePromise(async () => {
-    const token = await LocalStorage.getItem("token");
-    return !!token;
-  });
-
-  const {
     data: activeSessionData,
     isLoading: fetchingActiveSession,
     revalidate: reload,
-  } = usePromise(
-    async () => {
-      const activeSession = await LocalStorage.getItem("activeSession");
-      if (!activeSession) {
-        await showToast(Toast.Style.Failure, "No active session");
-        return;
-      }
+  } = usePromise(async () => {
+    const activeSession = await LocalStorage.getItem("activeSession");
+    if (!activeSession) {
+      await showToast(Toast.Style.Failure, "No active session");
+      return;
+    }
 
-      if (typeof activeSession !== "string") {
-        await showToast(Toast.Style.Failure, "Invalid active session");
-        await LocalStorage.removeItem("activeSession");
-        return;
-      }
+    if (typeof activeSession !== "string") {
+      await showToast(Toast.Style.Failure, "Invalid active session");
+      await LocalStorage.removeItem("activeSession");
+      return;
+    }
 
-      const session: ActiveSession = JSON.parse(activeSession);
+    const session: ActiveSession = JSON.parse(activeSession);
 
-      const savedProjects = await LocalStorage.getItem<string>("projects");
-      if (!savedProjects) return;
-      const projects = JSON.parse(savedProjects) as Project[];
+    const savedProjects = await LocalStorage.getItem<string>("projects");
+    if (!savedProjects) return;
+    const projects = JSON.parse(savedProjects) as Project[];
 
-      const project = projects.find((p) => p.id === session.projectId);
-      if (!project) {
-        await showToast(Toast.Style.Failure, "Project not found");
-        await LocalStorage.removeItem("activeSession");
-        return;
-      }
+    const project = projects.find((p) => p.id === session.projectId);
+    if (!project) {
+      await showToast(Toast.Style.Failure, "Project not found");
+      await LocalStorage.removeItem("activeSession");
+      return;
+    }
 
-      return { session, project };
-    },
-    [],
-    { execute: hasToken },
-  );
+    return { session, project };
+  });
 
   const { itemProps, values, handleSubmit } = useForm<{
     description: string;
@@ -69,7 +68,7 @@ export default function StartWork() {
     startDate: Date | null;
     endDate: Date | null;
   }>({
-    onSubmit: (values) => {
+    onSubmit: async (values) => {
       if (!activeSessionData) {
         showToast(Toast.Style.Failure, "No active session found");
         return;
@@ -77,15 +76,55 @@ export default function StartWork() {
 
       const requiresCommits = requiresGithubUrl(values.taskType);
       if (requiresCommits) {
-        push(
-          <SelectCommits
-            project={activeSessionData.project}
-            taskDetails={values}
-            session={activeSessionData.session}
-          />,
-        );
+        push(<SelectCommits project={activeSessionData.project} taskDetails={values} />);
         return;
       }
+
+      const { session, project } = activeSessionData;
+      if (!session.logs?.length) session.logs = [];
+
+      const startTime = new Date(
+        values.startDate ?? session.logs[session.logs.length - 1]?.endTime ?? session.startTime,
+      );
+      const endTime = new Date(values.endDate || new Date().getTime());
+      const sessionLog: SessionLog = {
+        projectId: project.id,
+        description: values.description,
+        startTime: startTime.getTime(),
+        endTime: endTime.getTime(),
+        githubUris: [],
+        type: values.taskType as TaskType,
+      };
+      const newActiveSession: ActiveSession = {
+        logs: [...session.logs, sessionLog],
+        startTime: session.startTime,
+        projectId: session.projectId,
+      };
+      if (values.endSession) {
+        await LocalStorage.removeItem("activeSession");
+        const worklogs = await LocalStorage.getItem<string>("worklogs");
+        const worklogsObj: WorkLogs = worklogs ? JSON.parse(worklogs) : {};
+
+        const sessionDate = DateTime.fromMillis(session.startTime).toFormat("yyyy-MM-dd");
+
+        const newWorklogs = {
+          ...worklogsObj,
+          [sessionDate]: {
+            ...(worklogsObj[sessionDate] || {}),
+            [project.id]: [...(worklogsObj[sessionDate]?.[project.id] || []), ...newActiveSession.logs],
+          },
+        };
+
+        await LocalStorage.setItem("worklogs", JSON.stringify(newWorklogs));
+      } else {
+        await LocalStorage.setItem("activeSession", JSON.stringify(newActiveSession));
+      }
+      const duration = DateTime.fromJSDate(endTime).diff(DateTime.fromJSDate(startTime), ["hours"]).toObject().hours;
+      showHUD(`Session ended, ${duration?.toFixed(2)} hours`, {
+        popToRootType: PopToRootType.Immediate,
+        clearRootSearch: true,
+      });
+
       console.log("Form submitted with values:", values);
     },
     initialValues: {
@@ -106,10 +145,8 @@ export default function StartWork() {
     },
   });
 
-  if (!hasToken && !checkingToken) return <TokenForm onSuccess={revalidate} />;
-  if (checkingToken || fetchingActiveSession) return <Detail />;
+  if (!activeSessionData && fetchingActiveSession) return <Detail />;
   if (!activeSessionData) return <Detail markdown="No active session found." />;
-
   return (
     <Form
       searchBarAccessory={<Form.LinkAccessory target="https://wabix.io" text="Open Wabix" />}
@@ -131,7 +168,7 @@ export default function StartWork() {
           />
           <Action.Push
             title="Edit Repositories"
-            target={<EditRepositories project={activeSessionData.project.id} onSubmit={reload} />}
+            target={<ManageProject project={activeSessionData.project} onSubmit={reload} />}
             icon={Icon.Pencil}
             shortcut={{ modifiers: ["cmd"], key: "e" }}
           />

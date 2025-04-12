@@ -1,12 +1,23 @@
-import { Action, ActionPanel, Color, Icon, List, showToast, Toast } from "@raycast/api";
-import { ActiveSession, Project } from "../types";
+import {
+  Action,
+  ActionPanel,
+  Color,
+  Icon,
+  List,
+  LocalStorage,
+  PopToRootType,
+  showHUD,
+  showToast,
+  Toast,
+} from "@raycast/api";
+import { ActiveSession, Project, SessionLog, TaskType, WorkLogs } from "../types";
 import { useExec } from "@raycast/utils";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { formatDate } from "../utils/formatDate";
+import { DateTime } from "luxon";
 
 interface Props {
   project: Project;
-  session: ActiveSession;
   taskDetails: {
     endSession: boolean;
     description: string;
@@ -27,6 +38,75 @@ type Commit = {
 export function SelectCommits({ project, taskDetails }: Props) {
   const [selected, setSelected] = useState(project.repositories[0]);
   const [selectedCommits, setSelectedCommits] = useState<Commit[]>([]);
+
+  const endTask = useCallback(async () => {
+    if (selectedCommits.length === 0) {
+      await showToast({
+        style: Toast.Style.Failure,
+        title: "No commits selected",
+        message: "Please select at least one commit before saving the worklog.",
+      });
+      return;
+    }
+
+    const activeSession = await LocalStorage.getItem("activeSession");
+    if (!activeSession) {
+      await showToast(Toast.Style.Failure, "No active session");
+      return;
+    }
+
+    if (typeof activeSession !== "string") {
+      await showToast(Toast.Style.Failure, "Invalid active session");
+      await LocalStorage.removeItem("activeSession");
+      return;
+    }
+
+    const session: ActiveSession = JSON.parse(activeSession);
+    if (!session.logs?.length) session.logs = [];
+
+    const startTime = new Date(
+      taskDetails.startDate ?? session.logs[session.logs.length - 1]?.endTime ?? session.startTime,
+    );
+    const endTime = new Date(taskDetails.endDate || new Date().getTime());
+
+    const sessionLog: SessionLog = {
+      projectId: project.id,
+      description: taskDetails.description,
+      startTime: startTime.getTime(),
+      endTime: endTime.getTime(),
+      githubUris: selectedCommits.map((commit) => commit.commitUrl),
+      type: taskDetails.taskType as TaskType,
+    };
+    const newActiveSession: ActiveSession = {
+      logs: [...session.logs, sessionLog],
+      startTime: session.startTime,
+      projectId: session.projectId,
+    };
+    if (taskDetails.endSession) {
+      await LocalStorage.removeItem("activeSession");
+      const worklogs = await LocalStorage.getItem<string>("worklogs");
+      const worklogsObj: WorkLogs = worklogs ? JSON.parse(worklogs) : {};
+
+      const sessionDate = DateTime.fromMillis(session.startTime).toFormat("yyyy-MM-dd");
+
+      const newWorklogs = {
+        ...worklogsObj,
+        [sessionDate]: {
+          ...(worklogsObj[sessionDate] || {}),
+          [project.id]: [...(worklogsObj[sessionDate]?.[project.id] || []), ...newActiveSession.logs],
+        },
+      };
+
+      await LocalStorage.setItem("worklogs", JSON.stringify(newWorklogs));
+    } else {
+      await LocalStorage.setItem("activeSession", JSON.stringify(newActiveSession));
+    }
+    const duration = DateTime.fromJSDate(endTime).diff(DateTime.fromJSDate(startTime), ["hours"]).toObject().hours;
+    showHUD(`Session ended, ${duration?.toFixed(2)} hours`, {
+      popToRootType: PopToRootType.Immediate,
+      clearRootSearch: true,
+    });
+  }, [selectedCommits, taskDetails, project]);
 
   const { data: remoteData, isLoading: remoteLoading } = useExec("git", ["config", "--get", "remote.origin.url"], {
     cwd: selected.url,
@@ -144,7 +224,7 @@ export function SelectCommits({ project, taskDetails }: Props) {
                 <Action
                   title="Save Worklog"
                   icon={{ source: Icon.CheckRosette, tintColor: Color.Green }}
-                  style={Action.Style.Destructive}
+                  onAction={() => endTask()}
                 />
                 <Action.OpenInBrowser
                   url={commit.commitUrl}
