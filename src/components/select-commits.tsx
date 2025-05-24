@@ -127,18 +127,30 @@ export function SelectCommits({ project, taskDetails }: Props) {
     },
   });
 
+  const { data: gitUser, isLoading: gitUserLoading } = useExec("git", ["config", "user.name"], {
+    cwd: selected.url,
+    execute: !!selected,
+    parseOutput: ({ stdout, stderr }) => {
+      if (stderr) throw new Error(`Failed to get git user: ${stderr}`);
+      return stdout.trim();
+    },
+  });
+
   const { data: commits, isLoading } = useExec(
     "git",
     ["log", "-n 150", "--pretty=format:%H|%an|%ad|%s", "--date=iso"],
     {
       cwd: selected.url,
-      execute: !!selected && !!remoteData,
+      execute: !!selected && !!remoteData && !!gitUser,
       parseOutput: ({ stdout, stderr }) => {
         if (stderr) throw new Error(`Failed to extract commits: ${stderr}`);
 
         const lines = stdout.trim().split("\n");
+        if (lines.length === 1 && lines[0] === "") {
+          return {};
+        }
 
-        const commits = lines.map((line) => {
+        const allCommits = lines.map((line) => {
           const [hash, author, date, ...messageParts] = line.split("|");
           const message = messageParts.join("|").trim();
 
@@ -156,7 +168,20 @@ export function SelectCommits({ project, taskDetails }: Props) {
           return commit;
         });
 
-        return commits;
+        // Filter to show only current user's commits
+        const myCommits = allCommits.filter((commit) => commit.author === gitUser);
+
+        // Group commits by day
+        const groupedCommits: { [key: string]: Commit[] } = {};
+        myCommits.forEach((commit) => {
+          const day = DateTime.fromJSDate(new Date(commit.date)).toFormat("yyyy-MM-dd");
+          if (!groupedCommits[day]) {
+            groupedCommits[day] = [];
+          }
+          groupedCommits[day].push(commit);
+        });
+
+        return groupedCommits;
       },
       onError: () => {
         showToast({
@@ -178,7 +203,7 @@ export function SelectCommits({ project, taskDetails }: Props) {
 
   return (
     <List
-      isLoading={isLoading || remoteLoading}
+      isLoading={isLoading || remoteLoading || gitUserLoading}
       navigationTitle="Select commits"
       searchBarAccessory={
         <List.Dropdown
@@ -198,96 +223,109 @@ export function SelectCommits({ project, taskDetails }: Props) {
       isShowingDetail
     >
       <List.EmptyView
-        title="No repositories found"
-        description="Please add a repository to the project before selecting commits."
+        title="No commits found"
+        description="No commits found for the current user in this repository."
         icon={Icon.MagnifyingGlass}
       />
-      {commits?.map((commit) => {
-        const isSelected = selectedCommits.some((c) => c.hash === commit.hash);
+      {!!commits &&
+        Object.keys(commits)
+          .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())
+          .map((day) => {
+            return (
+              <List.Section key={day} title={DateTime.fromFormat(day, "yyyy-MM-dd").toFormat("EEEE, MMMM d, yyyy")}>
+                {commits[day] &&
+                  commits[day]?.map((commit) => {
+                    const isSelected = selectedCommits.some((c) => c.hash === commit.hash);
 
-        return (
-          <List.Item
-            key={commit.hash}
-            title={formatDate(commit.date)}
-            subtitle={commit.message}
-            icon={{
-              source: isSelected ? Icon.Checkmark : Icon.Circle,
-              tintColor: isSelected ? Color.Green : Color.PrimaryText,
-            }}
-            actions={
-              <ActionPanel>
-                <Action
-                  title={isSelected ? "Unselect" : "Select"}
-                  icon={isSelected ? Icon.XMarkCircle : Icon.Checkmark}
-                  onAction={() => toggleCommit(commit)}
-                />
-                <Action
-                  title="Save Worklog"
-                  icon={{ source: Icon.CheckRosette, tintColor: Color.Green }}
-                  onAction={() => endTask()}
-                />
-                <Action.OpenInBrowser
-                  url={commit.commitUrl}
-                  title="Open Commit in Browser"
-                  icon={Icon.Globe}
-                  shortcut={{ modifiers: ["cmd"], key: "o" }}
-                />
-                <Action.CopyToClipboard
-                  content={commit.commitUrl}
-                  title="Copy Commit URL"
-                  icon={Icon.Clipboard}
-                  shortcut={{ modifiers: ["cmd", "shift"], key: "c" }}
-                />
-              </ActionPanel>
-            }
-            detail={
-              <List.Item.Detail
-                metadata={
-                  <List.Item.Detail.Metadata>
-                    <List.Item.Detail.Metadata.Label title="Commit" text={commit.hash} />
-                    <List.Item.Detail.Metadata.Label title="Author" text={commit.author} />
-                    <List.Item.Detail.Metadata.Label title="Date" text={formatDate(commit.date)} />
-                    <List.Item.Detail.Metadata.Label title="Message" text={commit.message} />
-                    <List.Item.Detail.Metadata.Link
-                      title="Commit URL"
-                      text={commit.commitUrl}
-                      target={commit.commitUrl}
-                    />
-                    <List.Item.Detail.Metadata.Separator />
+                    return (
+                      <List.Item
+                        key={commit.hash}
+                        title={DateTime.fromJSDate(new Date(commit.date)).toFormat("HH:mm")}
+                        subtitle={commit.message}
+                        icon={{
+                          source: isSelected ? Icon.Checkmark : Icon.Circle,
+                          tintColor: isSelected ? Color.Green : Color.PrimaryText,
+                        }}
+                        actions={
+                          <ActionPanel>
+                            <Action
+                              title={isSelected ? "Unselect" : "Select"}
+                              icon={isSelected ? Icon.XMarkCircle : Icon.Checkmark}
+                              onAction={() => toggleCommit(commit)}
+                            />
+                            <Action
+                              title="Save Worklog"
+                              icon={{ source: Icon.CheckRosette, tintColor: Color.Green }}
+                              onAction={() => endTask()}
+                            />
+                            <Action.OpenInBrowser
+                              url={commit.commitUrl}
+                              title="Open Commit in Browser"
+                              icon={Icon.Globe}
+                              shortcut={{ modifiers: ["cmd"], key: "o" }}
+                            />
+                            <Action.CopyToClipboard
+                              content={commit.commitUrl}
+                              title="Copy Commit URL"
+                              icon={Icon.Clipboard}
+                              shortcut={{ modifiers: ["cmd", "shift"], key: "c" }}
+                            />
+                          </ActionPanel>
+                        }
+                        detail={
+                          <List.Item.Detail
+                            metadata={
+                              <List.Item.Detail.Metadata>
+                                <List.Item.Detail.Metadata.Label title="Commit" text={commit.hash} />
+                                <List.Item.Detail.Metadata.Label title="Author" text={commit.author} />
+                                <List.Item.Detail.Metadata.Label title="Date" text={formatDate(commit.date)} />
+                                <List.Item.Detail.Metadata.Label title="Message" text={commit.message} />
+                                <List.Item.Detail.Metadata.Link
+                                  title="Commit URL"
+                                  text={commit.commitUrl}
+                                  target={commit.commitUrl}
+                                />
+                                <List.Item.Detail.Metadata.Separator />
 
-                    <List.Item.Detail.Metadata.TagList title="Task Type">
-                      <List.Item.Detail.Metadata.TagList.Item text={taskDetails.taskType} color={Color.Blue} />
-                    </List.Item.Detail.Metadata.TagList>
-                    {taskDetails.startDate && (
-                      <List.Item.Detail.Metadata.TagList title="Adjusted Start Date">
-                        <List.Item.Detail.Metadata.TagList.Item
-                          text={formatDate(taskDetails.startDate.toString())}
-                          color={Color.Yellow}
-                        />
-                      </List.Item.Detail.Metadata.TagList>
-                    )}
-                    {taskDetails.endDate && (
-                      <List.Item.Detail.Metadata.TagList title="Adjusted End Date">
-                        <List.Item.Detail.Metadata.TagList.Item
-                          text={formatDate(taskDetails.endDate.toString())}
-                          color={Color.Yellow}
-                        />
-                      </List.Item.Detail.Metadata.TagList>
-                    )}
-                    <List.Item.Detail.Metadata.Label title="Description" text={taskDetails.description} />
-                    <List.Item.Detail.Metadata.TagList title="End Session">
-                      <List.Item.Detail.Metadata.TagList.Item
-                        text={taskDetails.endSession ? "Yes" : "No"}
-                        color={taskDetails.endSession ? Color.Green : Color.PrimaryText}
+                                <List.Item.Detail.Metadata.TagList title="Task Type">
+                                  <List.Item.Detail.Metadata.TagList.Item
+                                    text={taskDetails.taskType}
+                                    color={Color.Blue}
+                                  />
+                                </List.Item.Detail.Metadata.TagList>
+                                {taskDetails.startDate && (
+                                  <List.Item.Detail.Metadata.TagList title="Adjusted Start Date">
+                                    <List.Item.Detail.Metadata.TagList.Item
+                                      text={formatDate(taskDetails.startDate.toString())}
+                                      color={Color.Yellow}
+                                    />
+                                  </List.Item.Detail.Metadata.TagList>
+                                )}
+                                {taskDetails.endDate && (
+                                  <List.Item.Detail.Metadata.TagList title="Adjusted End Date">
+                                    <List.Item.Detail.Metadata.TagList.Item
+                                      text={formatDate(taskDetails.endDate.toString())}
+                                      color={Color.Yellow}
+                                    />
+                                  </List.Item.Detail.Metadata.TagList>
+                                )}
+                                <List.Item.Detail.Metadata.Label title="Description" text={taskDetails.description} />
+                                <List.Item.Detail.Metadata.TagList title="End Session">
+                                  <List.Item.Detail.Metadata.TagList.Item
+                                    text={taskDetails.endSession ? "Yes" : "No"}
+                                    color={taskDetails.endSession ? Color.Green : Color.PrimaryText}
+                                  />
+                                </List.Item.Detail.Metadata.TagList>
+                              </List.Item.Detail.Metadata>
+                            }
+                          />
+                        }
                       />
-                    </List.Item.Detail.Metadata.TagList>
-                  </List.Item.Detail.Metadata>
-                }
-              />
-            }
-          />
-        );
-      })}
+                    );
+                  })}
+              </List.Section>
+            );
+          })}
     </List>
   );
 }

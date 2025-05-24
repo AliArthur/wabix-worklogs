@@ -1,6 +1,6 @@
 import { List, Icon, LocalStorage, Color, ActionPanel, Action, Alert, confirmAlert } from "@raycast/api";
 import { usePromise } from "@raycast/utils";
-import { Project, WorkLogs } from "./types";
+import { Project, WorkLogs, ActiveSession } from "./types";
 import { formatDate } from "./utils/formatDate";
 import { DateTime } from "luxon";
 import { Fragment } from "react/jsx-runtime";
@@ -12,7 +12,11 @@ export default function Command() {
     return !!token;
   });
 
-  const { data: logs, isLoading } = usePromise(async () => {
+  const {
+    data: logs,
+    isLoading,
+    revalidate,
+  } = usePromise(async () => {
     const logs = await LocalStorage.getItem<string>("worklogs");
     if (!logs) return [];
     return JSON.parse(logs) as WorkLogs;
@@ -27,6 +31,14 @@ export default function Command() {
     [],
     { execute: hasToken },
   );
+
+  const { data: activeSession } = usePromise(async () => {
+    const activeSessionData = await LocalStorage.getItem("activeSession");
+    if (!activeSessionData || typeof activeSessionData !== "string") {
+      return null;
+    }
+    return JSON.parse(activeSessionData) as ActiveSession;
+  }, []);
 
   const clearLogs = useCallback(async () => {
     const options: Alert.Options = {
@@ -45,6 +57,7 @@ export default function Command() {
     if (!confirmed) return;
 
     await LocalStorage.removeItem("worklogs");
+    await revalidate();
   }, []);
 
   return (
@@ -59,6 +72,95 @@ export default function Command() {
         description="You don't have any work logs yet. Start a session to begin tracking your work."
         icon={Icon.Clock}
       />
+
+      {activeSession && projects && (
+        <List.Section title="🔴 Active Session">
+          {(() => {
+            const project = projects.find((p) => p.id === activeSession.projectId);
+            const currentTime = Date.now();
+            const sessionStart = activeSession.logs?.length
+              ? activeSession.logs[activeSession.logs.length - 1].endTime
+              : activeSession.startTime;
+            const currentDuration = DateTime.fromMillis(currentTime).diff(DateTime.fromMillis(sessionStart), [
+              "hours",
+              "minutes",
+            ]);
+            const totalSessionDuration = DateTime.fromMillis(currentTime).diff(
+              DateTime.fromMillis(activeSession.startTime),
+              ["hours", "minutes"],
+            );
+
+            return (
+              <List.Item
+                title={`${project?.name || "Unknown Project"} (Active)`}
+                accessories={[
+                  {
+                    tag: {
+                      value: `${Math.floor(currentDuration.hours)}h ${Math.floor(currentDuration.minutes)}m`,
+                      color: Color.Green,
+                    },
+                  },
+                ]}
+                icon={{ source: Icon.Circle, tintColor: Color.Green }}
+                detail={
+                  <List.Item.Detail
+                    metadata={
+                      <List.Item.Detail.Metadata>
+                        <List.Item.Detail.Metadata.TagList title="Status">
+                          <List.Item.Detail.Metadata.TagList.Item text="Active Session" color={Color.Green} />
+                        </List.Item.Detail.Metadata.TagList>
+                        <List.Item.Detail.Metadata.TagList title="Current Task Duration">
+                          <List.Item.Detail.Metadata.TagList.Item
+                            text={`${Math.floor(currentDuration.hours)}h ${Math.floor(currentDuration.minutes)}m`}
+                            color={Color.Orange}
+                          />
+                        </List.Item.Detail.Metadata.TagList>
+                        <List.Item.Detail.Metadata.TagList title="Total Session Duration">
+                          <List.Item.Detail.Metadata.TagList.Item
+                            text={`${Math.floor(totalSessionDuration.hours)}h ${Math.floor(totalSessionDuration.minutes)}m`}
+                            color={Color.Blue}
+                          />
+                        </List.Item.Detail.Metadata.TagList>
+                        <List.Item.Detail.Metadata.Label
+                          title="Session Started"
+                          text={formatDate(activeSession.startTime)}
+                        />
+                        <List.Item.Detail.Metadata.Label title="Current Task Started" text={formatDate(sessionStart)} />
+                        {activeSession.logs && activeSession.logs.length > 0 && (
+                          <>
+                            <List.Item.Detail.Metadata.Separator />
+                            <List.Item.Detail.Metadata.Label
+                              title="Completed Tasks"
+                              text={`${activeSession.logs.length} task(s)`}
+                            />
+                            {activeSession.logs.map((log, index) => {
+                              const duration = DateTime.fromMillis(log.endTime).diff(
+                                DateTime.fromMillis(log.startTime),
+                                ["hours", "minutes"],
+                              );
+                              return (
+                                <Fragment key={index}>
+                                  <List.Item.Detail.Metadata.TagList title={`Task ${index + 1} - ${log.type}`}>
+                                    <List.Item.Detail.Metadata.TagList.Item
+                                      text={`${Math.floor(duration.hours)}h ${Math.floor(duration.minutes)}m`}
+                                      color={Color.Purple}
+                                    />
+                                  </List.Item.Detail.Metadata.TagList>
+                                  <List.Item.Detail.Metadata.Label title="Description" text={log.description} />
+                                </Fragment>
+                              );
+                            })}
+                          </>
+                        )}
+                      </List.Item.Detail.Metadata>
+                    }
+                  />
+                }
+              />
+            );
+          })()}
+        </List.Section>
+      )}
 
       {!!logs &&
         !!projects &&
@@ -85,7 +187,7 @@ export default function Command() {
                     githubUris: session.githubUris?.length ? session.githubUris : undefined,
                   };
                 });
-                const totalDuration = sessions.reduce(
+                const totalDurationRaw = sessions.reduce(
                   (acc, session) => {
                     const duration = DateTime.fromMillis(session.endTime).diff(DateTime.fromMillis(session.startTime), [
                       "hours",
@@ -98,6 +200,11 @@ export default function Command() {
                   },
                   { hours: 0, minutes: 0 },
                 );
+
+                const totalDuration = {
+                  hours: totalDurationRaw.hours + Math.floor(totalDurationRaw.minutes / 60),
+                  minutes: totalDurationRaw.minutes % 60,
+                };
 
                 return (
                   <List.Item
